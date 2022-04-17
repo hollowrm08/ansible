@@ -1,0 +1,350 @@
+
+Configurações Vagrantfile:
+
+    Vagrant.configure("2") do |config|
+        config.vm.box = "ubuntu/bionic64" 
+        config.vm.provider "virtualbox" do |vb|
+        vb.memory = 512
+        vb.cpus = 1
+        end
+
+        config.vm.define "ansible" do |ansible|
+            ansible.vm.network "public_network", ip: "192.168.1.20" 
+            ansible.vm.provision "shell", inline: "cp /vagrant/teste-chave  /home/vagrant && \
+            chmod 600 /home/vagrant/teste-chave && \
+            chown vagrant:vagrant /home/vagrant/teste-chave"
+            
+        
+            #instala o ansible na vm
+            ansible.vm.provision "shell", 
+            inline: "apt-get update && \
+                apt-get install -y software-properties-common && \
+                apt-add-repository --yes --update ppa:ansible/ansible && \
+                apt-get install -y ansible"
+        
+        end
+
+        config.vm.define "wordpress" do |wordpress|
+            #resolver problema SSL
+            wordpress.vm.box_download_insecure = true
+            wordpress.vm.box = "ubuntu/trusty64"
+            wordpress.vm.network "private_network", ip: "172.17.177.40"
+            wordpress.vm.synced_folder "./configs", "/configs"
+            wordpress.vm.provision "shell", inline: "touch .ssh/authorized_keys && cat /configs/teste-chave.pub >> .ssh/authorized_keys"
+        end
+
+    end
+
+Hello world
+    ansible wordpress -u vagrant --private-key teste-chave -i /vagrant/configs/hosts -m shell -a 'echo Hello, World'
+
+Hello world verboso
+    ansible -vvvv wordpress -u vagrant --private-key teste-chave -i /vagrant/configs/hosts -m shell -a 'echo Hello, World'
+
+-> arquivo playbook
+    ---
+    - hosts: all
+    tasks:
+        - shell: 'echo hello > /vagrant/world.txt'
+
+Executar playbook
+    ansible-playbook /vagrant/configs/provisioning.yml -u vagrant --private-key teste-chave -i /vagrant/configs/hosts 
+
+-> Reescrever playbook
+    ---
+    - hosts: all
+    tasks:
+        - name: 'Instala pacotes de dependencia no sistema operacional'
+        apt:
+            name: 
+            - php5
+            - apache2
+            - libapache2-mod-php5
+            - php5-gd
+            - libssh2-php
+            - php5-mcrypt
+            - mysql-server-5.6
+            - python-mysqldb
+            - php5-mysql
+            state: latest
+        become: yes
+
+-> Reescrever arquivo hosts:
+    [wordpress]
+    172.17.177.40 ansible_user=vagrant ansible_ssh_private_key_file="teste-chave"
+
+Executar playbook (simplificado) 
+    ansible-playbook /vagrant/configs/provisioning.yml -i /vagrant/configs/hosts 
+
+
+---------------------------------------------------------
+-> Alterar provising.yml para instruir a criação de uma base no mysql
+    - name: 'Cria o banco MySql'
+      mysql_db: 
+        name: wordpress_db
+        login_user: root
+        state: present
+
+    - name: 'Cria usuario banco MySQLdb'
+      mysql_user:
+        login_user: root
+        name: wordpress_user
+        password: '12345'
+        priv: 'wordpress_db.*:ALL'
+        state: present
+
+    - name: 'Baixa o arquivo de instalacao do Wordpress'
+      get_url:
+        url: 'https://wordpress.org/latest.tar.gz'
+        dest: '/tmp/wordpress.tar.gz'
+
+    - name: 'Descompacta o wordpress'
+      unarchive:
+        src: '/tmp/wordpress.tar.gz'
+        dest: /var/www/
+        remote_src: yes
+      become: yes
+        
+    - copy:
+      src: '/var/www/wordpress/wp-config-sample.php'
+        dest: '/var/www/wordpress/wp-config.php'
+        remote_src: yes
+      become: yes
+
+    - name: 'Configura o wp-config com as entradas do banco de dados'     
+      replace:
+        path: '/var/www/wordpress/wp-config.php'
+        regexp: "{{ item.regex }}"
+        replace: "{{ item.value }}"
+      with_items:
+        - { regex: 'database_name_here', value: 'wordpress_db'}
+        - { regex: 'username_here', value: ' wordpress_user'}
+        - { regex: 'password_here', value: '12345'}
+      become: yes
+
+-------------------
+-> Criar arquivo '000-default.conf'
+    <VirtualHost *:80>
+            # The ServerName directive sets the request scheme, hostname and port that
+            # the server uses to identify itself. This is used when creating
+            # redirection URLs. In the context of virtual hosts, the ServerName
+            # specifies what hostname must appear in the request's Host: header to
+            # match this virtual host. For the default virtual host (this file) this
+            # value is not decisive as it is used as a last resort host regardless.
+            # However, you must set it for any further virtual host explicitly.
+            #ServerName www.example.com
+
+            ServerAdmin webmaster@localhost
+            DocumentRoot /var/www/wordpress
+
+            # Available loglevels: trace8, ..., trace1, debug, info, notice, warn,
+            # error, crit, alert, emerg.
+            # It is also possible to configure the loglevel for particular
+            # modules, e.g.
+            #LogLevel info ssl:warn
+
+            ErrorLog ${APACHE_LOG_DIR}/error.log
+            CustomLog ${APACHE_LOG_DIR}/access.log combined
+
+            # For most configuration files from conf-available/, which are
+            # enabled or disabled at a global level, it is possible to
+            # include a line for only one particular virtual host. For example the
+            # following line enables the CGI configuration for this host only
+            # after it has been globally disabled with "a2disconf".
+            # Include conf-available/serve-cgi-bin.conf
+    </VirtualHost>
+
+    # vim: syntax=apache ts=4 sw=4 sts=4 sr noet
+
+-> Adicionar ao provision.yml
+    - name: 'Configura Apache 2 para servir o Wordpress'
+      copy:
+        src: '/vagrant/configs/000-default.conf'
+        dest: '/etc/apache2/sites-available/000-default.conf'
+      become: yes
+      notify:
+        - 'Restart Apache'
+
+-> Reescrever inicio do arquivo provision.yml
+    ---
+    - hosts: all
+    handlers:
+    - name: 'Restart Apache'
+      service: 
+        name: apache2
+        state: restarted
+      become: yes
+
+-------------------
+-> Substituir vagrant file, hosts e provisioning.yml
+
+  Vagrant.configure("2") do |config|
+    config.vm.box = "ubuntu/bionic64" 
+    config.vm.provider "virtualbox" do |vb|
+      vb.memory = 1024
+      vb.cpus = 1
+    end
+
+    config.vm.define "ansible" do |ansible|
+        ansible.vm.box_download_insecure = true
+        ansible.vm.network "public_network", ip: "192.168.1.20" 
+        ansible.vm.provision "shell", inline: "echo 'nameserver 8.8.8.8' | sudo tee /etc/resolv.conf > /dev/null"
+        ansible.vm.provision "shell", inline: "cp /vagrant/teste-chave  /home/vagrant && \
+          chmod 600 /home/vagrant/teste-chave && \
+          chown vagrant:vagrant /home/vagrant/teste-chave"
+        
+        #instala o ansible na vm
+        ansible.vm.provision "shell", 
+          inline: "apt-get update && \
+            apt-get install -y software-properties-common && \
+            apt-add-repository --yes --update ppa:ansible/ansible && \
+            apt-get install -y ansible"
+    end
+
+    config.vm.define "wordpress" do |wordpress|
+        #resolver problema SSL
+        wordpress.vm.box_download_insecure = true
+        wordpress.vm.box = "ubuntu/trusty64"
+        wordpress.vm.network "private_network", ip: "172.17.177.40"
+        wordpress.vm.synced_folder "./configs", "/configs"      
+        wordpress.vm.provision "shell", inline: "touch .ssh/authorized_keys && cat /configs/teste-chave.pub >> .ssh/authorized_keys"      
+        wordpress.vm.provision "shell", inline: "echo 'nameserver 8.8.8.8' | sudo tee /etc/resolv.conf > /dev/null"
+    end
+
+    config.vm.define "mysql" do |mysql|
+      mysql.vm.box_download_insecure = true
+      mysql.vm.box = "ubuntu/trusty64"
+      mysql.vm.network "private_network", ip: "172.17.177.42"
+      mysql.vm.provision "shell", inline: "touch .ssh/authorized_keys && cat /vagrant/configs/teste-chave.pub >> .ssh/authorized_keys"      
+      mysql.vm.provision "shell", inline: "echo 'nameserver 8.8.8.8' | sudo tee /etc/resolv.conf > /dev/null"
+    end
+
+  end
+
+  -------------------
+  [wordpress]
+  172.17.177.40 ansible_user=vagrant ansible_ssh_private_key_file="teste-chave"
+
+  [database]
+  172.17.177.42 ansible_user=vagrant ansible_ssh_private_key_file="teste-chave"
+
+  -------------------
+  ---
+  - hosts: database
+    tasks:
+      - name: 'Instala pacotes de dependencia no sistema operacional'
+        apt:
+          name: 
+          - mysql-server-5.6
+          - python-mysqldb
+          state: latest
+        become: yes
+
+      - name: 'Cria o banco MySql'
+        mysql_db: 
+          name: wordpress_db
+          login_user: root
+          state: present
+          
+      - name: 'Cria usuario banco MySQLdb'
+        mysql_user:
+          login_user: root
+          name: wordpress_user
+          password: senha
+          priv: 'wordpress_db.*:ALL'
+          state: present
+          host: "{{ item }}"
+        with_items:
+          - 'localhost'
+          - '127.0.0.1'
+          - '172.17.177.40'    
+
+  - hosts: wordpress
+    handlers:
+      - name: 'Restart Apache'
+        service: 
+          name: apache2
+          state: restarted
+        become: yes
+
+    tasks:
+      - name: 'Instala pacotes de dependencia no sistema operacional'
+        apt:
+          name: 
+          - php5
+          - apache2
+          - libapache2-mod-php5
+          - php5-gd
+          - libssh2-php
+          - php5-mcrypt
+          - php5-mysql
+          state: latest
+        become: yes
+
+      - name: 'Baixa o arquivo de instalacao do Wordpress'
+        get_url:
+          url: 'https://wordpress.org/wordpress-5.0.16.tar.gz'
+          dest: '/tmp/wordpress.tar.gz'
+
+      - name: 'Descompacta o wordpress'
+        unarchive:
+          src: '/tmp/wordpress.tar.gz'
+          dest: /var/www/
+          remote_src: yes
+        become: yes
+
+      - name: 'Duplicando arquivo de condif do MySQL'
+        copy:
+          src: '/var/www/wordpress/wp-config-sample.php'
+          dest: '/var/www/wordpress/wp-config.php'
+          remote_src: yes
+        become: yes
+
+      - name: 'Configura o wp-config com as entradas do banco de dados'     
+        replace:
+          path: '/var/www/wordpress/wp-config.php'
+          regexp: "{{ item.regex }}"
+          replace: "{{ item.value }}"
+        with_items:
+          - { regex: 'database_name_here', value: 'wordpress_db'}
+          - { regex: 'username_here', value: 'wordpress_user'}
+          - { regex: 'password_here', value: '12345'}
+          - { regex: 'localhost', value: '172.17.177.42'}
+        become: yes
+
+      - name: 'Configura Apache 2 para servir o Wordpress'
+        copy:
+          src: '/vagrant/configs/000-default.conf'
+          dest: '/etc/apache2/sites-available/000-default.conf'
+        become: yes
+        notify:
+          - 'Restart Apache'
+
+-> Copiar arquivo my.cnf para fora da VM 
+-> Alterar trecho
+  bind-address            = 127.0.0.1
+  para
+  bind-address            = 0.0.0.0
+
+-> Adicionar instrucao ao provisiosing.yml
+    handlers:
+    - name: 'Restart MySql'
+      service: 
+        name: mysql
+        state: restarted
+      become: yes
+
+    - name: 'Configura arquivo cnf' 
+      copy:
+        src: '/vagrant/configs/my.cnf'
+        dest: '/etc/mysql/my.cnf'
+      become: yes
+      notify:
+        - 'Restart MySql'
+
+
+-> Criar arquivo para variaveis 'group_vars/all.yml'
+  ---
+  wp_username: wordpress_user
+  wp_db_name: wordpress_db
+
